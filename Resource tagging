@@ -1,0 +1,98 @@
+import boto3
+import json
+import logging
+
+def lambda_handler(event, context):
+    logger = logging.getLogger()
+    logger.setLevel(logging.INFO)
+
+    # Log the received event for debugging
+    logger.info(f"Received event: {json.dumps(event)}")
+
+    # Extract event details
+    try:
+        detail = event['detail']
+        arn = detail['userIdentity']['arn']
+        region = event.get('region', 'us-east-1')  # Default to N. Virginia if region is missing
+        service_event = detail['eventName']
+        account = event['account']
+        principal_id = detail['userIdentity']['principalId']
+    except KeyError as e:
+        logger.error(f"Key missing in event: {e}")
+        return {'statusCode': 400, 'body': json.dumps('Invalid Event Structure')}
+
+    # Mapping service event names to taggable ARNs
+    service_event_to_arn_mapping = {
+        "RunInstances": lambda d: [
+            f"arn:aws:ec2:{region}:{account}:instance/{instance['instanceId']}"
+            for instance in d.get('responseElements', {}).get('instancesSet', {}).get('items', [])
+        ],
+        "CreateBucket": lambda d: [f"arn:aws:s3:::{d['requestParameters']['bucketName']}"],
+        "CreateDBInstance": lambda d: [d['responseElements']['dBInstanceArn']],
+        "CreateFunction": lambda d: [d['responseElements']['functionArn']],
+        "CreateTable": lambda d: [
+            f"arn:aws:dynamodb:{region}:{account}:table/{d['requestParameters']['tableName']}"
+        ],
+        "CreateVolume": lambda d: [f"arn:aws:ec2:{region}:{account}:volume/{d['responseElements']['volumeId']}"],
+        "CreateVpc": lambda d: [f"arn:aws:ec2:{region}:{account}:vpc/{d['responseElements']['vpc']['vpcId']}"],
+        "CreateSubnet": lambda d: [f"arn:aws:ec2:{region}:{account}:subnet/{d['responseElements']['subnet']['subnetId']}"],
+        "CreateInternetGateway": lambda d: [
+            f"arn:aws:ec2:{region}:{account}:internet-gateway/{d['responseElements']['internetGateway']['internetGatewayId']}"
+        ],
+        "CreateNatGateway": lambda d: [
+            f"arn:aws:ec2:{region}:{account}:nat-gateway/{d['responseElements']['natGateway']['natGatewayId']}"
+        ],
+        "CreateRouteTable": lambda d: [
+            f"arn:aws:ec2:{region}:{account}:route-table/{d['responseElements']['routeTable']['routeTableId']}"
+        ],
+        "CreateLoadBalancer": lambda d: [
+            f"arn:aws:elasticloadbalancing:{region}:{account}:loadbalancer/{d['responseElements']['loadBalancer']['loadBalancerName']}"
+        ],
+        "CreateDistribution": lambda d: [
+            f"arn:aws:cloudfront::{account}:distribution/{d['responseElements']['distribution']['id']}"
+        ],
+        "CreateRole": lambda d: [f"arn:aws:iam::{account}:role/{d['responseElements']['role']['roleName']}"],
+        "CreateUser": lambda d: [f"arn:aws:iam::{account}:user/{d['responseElements']['user']['userName']}"],
+        "PutMetricAlarm": lambda d: [
+            f"arn:aws:cloudwatch:{region}:{account}:alarm/{d['requestParameters']['alarmName']}"
+        ],
+        "CreateStack": lambda d: [f"arn:aws:cloudformation:{region}:{account}:stack/{d['responseElements']['stackId']}"],
+        "CreateAutoScalingGroup": lambda d: [
+            f"arn:aws:autoscaling:{region}:{account}:autoScalingGroup/{d['responseElements']['autoScalingGroupName']}"
+        ],
+        "PutParameter": lambda d: [f"arn:aws:ssm:{region}:{account}:parameter/{d['requestParameters']['name']}"],
+        "CreateSecret": lambda d: [f"arn:aws:secretsmanager:{region}:{account}:secret/{d['responseElements']['ARN']}"],
+        "CreateKey": lambda d: [d['responseElements']['keyMetadata']['arn']],
+        "CreateCluster": lambda d: [
+            f"arn:aws:eks:{region}:{account}:cluster/{d['requestParameters']['name']}"
+        ],
+        "CreateQueue": lambda d: [f"arn:aws:sqs:{region}:{account}:{d['requestParameters']['queueName']}"],
+        "CreateTopic": lambda d: [f"arn:aws:sns:{region}:{account}:{d['requestParameters']['name']}"],
+        "CreateEnvironment": lambda d: [
+            f"arn:aws:elasticbeanstalk:{region}:{account}:environment/{d['requestParameters']['environmentName']}"
+        ],
+        "CreateRestApi": lambda d: [
+            f"arn:aws:apigateway:{region}:{account}:restapi/{d['responseElements']['id']}"
+        ],
+        "CreateStream": lambda d: [
+            f"arn:aws:kinesis:{region}:{account}:stream/{d['requestParameters']['streamName']}"
+        ],
+        # Add other services as required
+    }
+
+    # Get ARNs for tagging
+    arns = service_event_to_arn_mapping.get(service_event, lambda x: [])(detail)
+
+    # Apply Tags
+    if arns:
+        client = boto3.client('resourcegroupstaggingapi', region_name=region)
+        for arn in arns:
+            try:
+                client.tag_resources(ResourceARNList=[arn], Tags={"Created By": principal_id})
+                logger.info(f"Successfully tagged resource: {arn}")
+            except Exception as e:
+                logger.error(f"Error tagging resource {arn}: {e}")
+    else:
+        logger.warning(f"No ARNs found for event {service_event}")
+
+    return {'statusCode': 200, 'body': json.dumps('Tagging operation completed')}
