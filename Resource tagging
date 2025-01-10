@@ -77,6 +77,15 @@ def lambda_handler(event, context):
         "CreateStream": lambda d: [
             f"arn:aws:kinesis:{region}:{account}:stream/{d['requestParameters']['streamName']}"
         ],
+        "CreateHostedZone": lambda d: [
+            f"arn:aws:route53:{region}:{account}:hostedzone/{d['requestParameters']['hostedZoneId']}"
+        ],
+        "CreateDirectory": lambda d: [
+            f"arn:aws:ds:{region}:{account}:directory/{d['responseElements']['directoryId']}"
+        ],
+        "AllocateAddress": lambda d: [
+            f"arn:aws:ec2:{region}:{account}:eip-allocation/{d['responseElements']['allocationId']}"
+        ] if 'responseElements' in d and 'allocationId' in d['responseElements'] else []
         # Add other services as required
     }
 
