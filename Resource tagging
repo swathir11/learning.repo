@@ -11,8 +11,10 @@ def lambda_handler(event, context):
 
     # Extract event details
     try:
-        detail = event['detail']
-        arn = detail['userIdentity']['arn']
+        detail = event.get('detail', {})
+        if not isinstance(detail, dict):
+            raise TypeError("Expected 'detail' to be a dictionary")
+        arn = detail.get('userIdentity', {}).get('arn', None)
         region = event.get('region', 'us-east-1')  # Default to N. Virginia if region is missing
         service_event = detail['eventName']
         account = event['account']
@@ -20,6 +22,20 @@ def lambda_handler(event, context):
     except KeyError as e:
         logger.error(f"Key missing in event: {e}")
         return {'statusCode': 400, 'body': json.dumps('Invalid Event Structure')}
+    except ValueError as e:
+        logger.error(f"Value error: {e}")
+        return {'statusCode': 400, 'body': json.dumps('Invalid Event Structure')}
+    except TypeError as e:
+        logger.error(f"Type error: {e}")
+        return {'statusCode': 400, 'body': json.dumps('Invalid Event Structure')}
+
+    # Extract the last column of the ARN (after the last '/')
+    try:
+        arn_last_column = arn.split('/')[-1]
+        logger.info(f"User ARN last column: {arn_last_column}")
+    except Exception as e:
+        logger.error(f"Error extracting ARN last column: {e}")
+        arn_last_column = "UnknownUser"
 
     # Mapping service event names to taggable ARNs
     service_event_to_arn_mapping = {
@@ -85,6 +101,36 @@ def lambda_handler(event, context):
         ],
         "AllocateAddress": lambda d: [
             f"arn:aws:ec2:{region}:{account}:eip-allocation/{d['responseElements']['allocationId']}"
+        ] if 'responseElements' in d and 'allocationId' in d['responseElements'] else [],
+        "PutMetricAlarm": lambda d: [
+            f"arn:aws:cloudwatch:{region}:{account}:alarm:{d['requestParameters']['alarmName']}"
+        ],
+        "CreateFileSystem": lambda d: [
+            f"arn:aws:elasticfilesystem:{region}:{account}:file-system/{d['responseElements']['fileSystemId']}"
+        ],
+        "PutRule": lambda d: [
+            f"arn:aws:events:{region}:{account}:rule/{d['requestParameters']['name']}"
+        ],
+        "CreateSchedule": lambda d: [
+            f"arn:aws:scheduler:{region}:{account}:schedule/{d['requestParameters']['name']}"
+        ],
+        "CreatePolicy": lambda d: [
+            f"arn:aws:iam::{account}:policy/{d['responseElements']['policy']['policyName']}"
+        ],
+        "CreateBackupVault": lambda d: [
+            f"arn:aws:backup:{region}:{account}:backup-vault:{d['requestParameters']['backupVaultName']}"
+        ],
+        "CreateBackupPlan": lambda d: [
+                f"arn:aws:backup:{region}:{account}:backup-plan/{d['requestParameters'].get('backupPlanId', 'UNKNOWN')}"
+            ] if 'requestParameters' in d and 'backupPlanId' in d['requestParameters'] else [],
+        "StartBackupJob": lambda d: [
+            f"arn:aws:backup:{region}:{account}:backup-job/{d['responseElements']['backupJobId']}"
+        ],
+        "CreateFileSystem": lambda d: [
+            f"arn:aws:fsx:{region}:{account}:file-system/{d['responseElements']['fileSystemId']}"
+        ],
+        "AllocateAddress": lambda d: [
+            f"arn:aws:ec2:{region}:{account}:eip-allocation/{d['responseElements']['allocationId']}"
         ] if 'responseElements' in d and 'allocationId' in d['responseElements'] else []
         # Add other services as required
     }
@@ -97,7 +143,7 @@ def lambda_handler(event, context):
         client = boto3.client('resourcegroupstaggingapi', region_name=region)
         for arn in arns:
             try:
-                client.tag_resources(ResourceARNList=[arn], Tags={"Created By": principal_id})
+                client.tag_resources(ResourceARNList=[arn], Tags={"Created By": arn_last_column})
                 logger.info(f"Successfully tagged resource: {arn}")
             except Exception as e:
                 logger.error(f"Error tagging resource {arn}: {e}")
